@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: diabetes_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: diabetes_user
+      POSTGRES_PASSWORD: diabetes_pass
+      POSTGRES_DB: diabetes_readmission
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+
+volumes:
+  postgres_data:
