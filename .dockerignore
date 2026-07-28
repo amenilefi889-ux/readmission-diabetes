@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+venv
+*.pyc
+__pycache__
+.pytest_cache
+.DS_Store
+*.egg-info
+dist
+build
+.coverage
+htmlcov
+.env
+notebooks
+data/raw/*.csv

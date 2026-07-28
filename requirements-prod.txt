@@ -1,0 +1,29 @@
+# Core ML Stack
+numpy==1.26.4
+pandas==2.2.3
+scikit-learn==1.9.0
+xgboost==2.1.1
+shap==0.45.0
+joblib==1.5.3
+
+# Web Framework
+streamlit==1.59.0
+
+# Database
+SQLAlchemy==2.0.51
+psycopg[binary]==3.3.4
+psycopg2-binary==2.9.12
+
+# Visualization
+matplotlib==3.9.2
+seaborn==0.13.2
+Pillow==10.3.0
+
+# Data Processing
+python-dotenv==1.2.2
+
+# Testing
+pytest==9.1.1
+
+# Utilities
+requests==2.34.2

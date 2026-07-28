@@ -14,6 +14,43 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./src/db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    networks:
+      - diabetes_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U diabetes_user -d diabetes_readmission"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: diabetes_streamlit
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      DB_USER: diabetes_user
+      DB_PASSWORD: diabetes_pass
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: diabetes_readmission
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - diabetes_net
+    command: >
+      sh -c "
+      
+      streamlit run app/streamlit_app.py --server.port=8501 --server.address=0.0.0.0
+      "
+
+networks:
+  diabetes_net:
+    driver: bridge
 
 volumes:
   postgres_data:
