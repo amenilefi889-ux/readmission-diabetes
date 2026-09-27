@@ -6,7 +6,7 @@ matrice de features prête pour l'entraînement (encodage age, regroupement
 des codes diagnostics ICD-9, encodage des catégorielles).
 
 La configuration DB est lue depuis les variables d'environnement (avec des
-valeurs par défaut pour l'exécution locale hors Docker), afin que ce module
+valeurs par défaut pour les paramètres non sensibles), afin que ce module
 fonctionne à la fois :
   - en local (Windows/PowerShell) : localhost:5433
   - dans le conteneur Docker : postgres:5432
@@ -20,13 +20,17 @@ Usage:
 import os
 import pandas as pd
 from sqlalchemy import create_engine
+from pathlib import Path
+from dotenv import load_dotenv
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT_DIR / ".env")
 
 DB_USER = os.environ.get("DB_USER", "diabetes_user")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "diabetes_pass")
+DB_PASSWORD = os.environ.get("DB_PASSWORD")
 DB_HOST = os.environ.get("DB_HOST", "localhost")
 DB_PORT = os.environ.get("DB_PORT", "5433")
 DB_NAME = os.environ.get("DB_NAME", "diabetes_readmission")
-DB_URL = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 TABLE_NAME = "patient_encounters"
 
@@ -75,9 +79,24 @@ def _diag_to_group(code: str) -> str:
     return "Other"
 
 
+def get_top_specialties(df: pd.DataFrame) -> list[str]:
+    return (
+        df["medical_specialty"]
+        .fillna("Unknown")
+        .astype(str)
+        .value_counts()
+        .nlargest(10)
+        .index
+        .tolist()
+    )
+
+
 def load_raw(table_name: str = TABLE_NAME) -> pd.DataFrame:
     """Charge la table depuis PostgreSQL."""
-    engine = create_engine(DB_URL)
+    if not DB_PASSWORD:
+        raise RuntimeError("DB_PASSWORD n'est pas défini — crée un fichier .env")
+    db_url = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    engine = create_engine(db_url)
     print(f"[FEATURES] Lecture de la table '{table_name}' ...")
     df = pd.read_sql_table(table_name, engine)
     print(f"[FEATURES] {len(df)} lignes chargées depuis PostgreSQL.")
@@ -105,9 +124,7 @@ def _prepare_feature_dataframe(df: pd.DataFrame, top_specialties=None) -> pd.Dat
     # --- Réduction de cardinalité : medical_specialty a >70 valeurs,
     # on garde les 10 plus fréquentes et on regroupe le reste ---
     if top_specialties is None:
-        top_specialties = (
-            df["medical_specialty"].fillna("Unknown").astype(str).value_counts().nlargest(10).index.tolist()
-        )
+        top_specialties = get_top_specialties(df)
 
     specialty_values = df["medical_specialty"].fillna("Unknown").astype(str)
     df["medical_specialty"] = specialty_values.where(specialty_values.isin(top_specialties), "Other")
@@ -157,9 +174,9 @@ def transform_dataframe_for_model(df: pd.DataFrame, feature_columns=None, top_sp
     return X
 
 
-def build_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+def build_features(df: pd.DataFrame, top_specialties=None) -> tuple[pd.DataFrame, pd.Series]:
     """Construit la matrice de features X et la cible y."""
-    df = _prepare_feature_dataframe(df)
+    df = _prepare_feature_dataframe(df, top_specialties=top_specialties)
 
     categorical_cols = [
         "race", "admission_type_id", "discharge_disposition_id",
@@ -187,9 +204,13 @@ def build_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     return X, y
 
 
-def load_and_build_features() -> tuple[pd.DataFrame, pd.Series]:
+def load_and_build_features(return_metadata: bool = False):
     df = load_raw()
-    return build_features(df)
+    top_specialties = get_top_specialties(df)
+    X, y = build_features(df, top_specialties=top_specialties)
+    if return_metadata:
+        return X, y, top_specialties
+    return X, y
 
 
 if __name__ == "__main__":

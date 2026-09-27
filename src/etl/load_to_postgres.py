@@ -6,7 +6,7 @@ en reproduisant exactement les étapes de nettoyage validées dans le
 notebook 01_exploration.ipynb (Phase 1 - EDA).
 
 La configuration DB est lue depuis les variables d'environnement (avec des
-valeurs par défaut pour l'exécution locale hors Docker), afin que ce script
+valeurs par défaut pour les paramètres non sensibles), afin que ce script
 fonctionne à la fois :
   - en local (Windows/PowerShell) : localhost:5433 (port publié par Docker Compose)
   - dans le conteneur Docker : postgres:5432 (nom du service + port interne)
@@ -39,8 +39,7 @@ DB_PORT = os.environ.get("DB_PORT", "5433")
 DB_NAME = os.environ.get("DB_NAME", "diabetes_readmission")
 
 DB_USER = os.environ.get("DB_USER", "diabetes_user")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "diabetes_pass")
-DB_URL = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DB_PASSWORD = os.environ.get("DB_PASSWORD")
 LOGGER = configure_json_logger(__name__)
 
 # Codes discharge_disposition_id correspondant à un décès ou une sortie en hospice
@@ -74,13 +73,19 @@ def extract(path: str) -> pd.DataFrame:
 
 # ----------------------------------------------------------------------
 # 3. TRANSFORM (reprend exactement les étapes du notebook)
+    from dotenv import load_dotenv
+
+    ROOT_DIR = Path(__file__).resolve().parents[2]
+    load_dotenv(ROOT_DIR / ".env")
 # ----------------------------------------------------------------------
 
 def transform(df: pd.DataFrame) -> pd.DataFrame:
     """Nettoyage complet : valeurs manquantes, dédup, exclusions, cible."""
 
     # --- Variable cible ---
-    df["target"] = (df["readmitted"] == "<30").astype(int)
+    DB_PASSWORD = os.environ.get("DB_PASSWORD")
+    if not DB_PASSWORD:
+        raise RuntimeError("DB_PASSWORD n'est pas défini — crée un fichier .env")
 
     # --- Suppression des colonnes trop incomplètes / peu pertinentes ---
     df = df.drop(columns=["weight", "payer_code"])
@@ -181,6 +186,9 @@ def load(df: pd.DataFrame, db_url: str, table_name: str = "patient_encounters"):
 
 def main():
     try:
+        if not DB_PASSWORD:
+            raise RuntimeError("DB_PASSWORD n'est pas défini — crée un fichier .env")
+        db_url = f"postgresql+psycopg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
         if not os.path.exists(RAW_DATA_PATH):
             raise FileNotFoundError(
                 f"Fichier introuvable : {RAW_DATA_PATH}\n"
@@ -189,7 +197,7 @@ def main():
 
         df_raw = extract(RAW_DATA_PATH)
         df_clean = transform(df_raw)
-        load(df_clean, DB_URL)
+        load(df_clean, db_url)
 
         target_distribution = df_clean["target"].value_counts(normalize=True).round(4).to_dict()
         LOGGER.info(

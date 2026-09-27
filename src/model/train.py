@@ -14,12 +14,16 @@ import sys
 import os
 import joblib
 import numpy as np
+import optuna
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.frozen import FrozenEstimator
 from sklearn.metrics import (
     roc_auc_score, average_precision_score,
+    precision_score, recall_score, brier_score_loss,
     precision_recall_curve,
     classification_report, confusion_matrix,
 )
@@ -33,14 +37,17 @@ MODEL_DIR = "models"
 RANDOM_STATE = 42
 
 
-def find_best_threshold_f1(y_true, y_proba):
-    """Choisit un seuil sur validation pour maximiser le F1-score
-    (compromis équilibré précision/recall)."""
-    precision, recall, thresholds = precision_recall_curve(y_true, y_proba)
-    f1_scores = 2 * precision * recall / np.maximum(precision + recall, 1e-9)
-    best_idx = np.argmax(f1_scores)
-    threshold = thresholds[best_idx] if best_idx < len(thresholds) else 0.5
-    return threshold, float(f1_scores[best_idx])
+def find_best_threshold_f2(y_true, y_proba):
+    """Choisit le seuil qui pondère le rappel deux fois plus que la précision."""
+    best_f2, best_threshold = 0.0, 0.5
+    for threshold in np.linspace(0.01, 0.99, 200):
+        y_pred = (y_proba >= threshold).astype(int)
+        precision = precision_score(y_true, y_pred, zero_division=0)
+        recall = recall_score(y_true, y_pred, zero_division=0)
+        f2 = 5 * precision * recall / max(4 * precision + recall, 1e-9)
+        if f2 > best_f2:
+            best_f2, best_threshold = f2, threshold
+    return float(best_threshold), float(best_f2)
 
 
 def find_threshold_for_recall(y_true, y_proba, target_recall: float = 0.60):
@@ -82,7 +89,9 @@ def evaluate(model, X_test, y_test, name: str, threshold: float = 0.5):
 def main():
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    X, y = load_and_build_features()
+    X, y, top_specialties = load_and_build_features(return_metadata=True)
+    if X.empty:
+        raise ValueError("Aucune feature disponible: exécute d'abord l'ETL PostgreSQL.")
 
     X_train, X_temp, y_train, y_temp = train_test_split(
         X, y, test_size=0.3, random_state=RANDOM_STATE, stratify=y
@@ -108,7 +117,7 @@ def main():
     )
     baseline.fit(X_train, y_train)
     baseline_val_proba = baseline.predict_proba(X_val)[:, 1]
-    baseline_threshold, _ = find_best_threshold_f1(y_val, baseline_val_proba)
+    baseline_threshold, _ = find_best_threshold_f2(y_val, baseline_val_proba)
     evaluate(baseline, X_test, y_test, "Baseline — Logistic Regression", baseline_threshold)
 
     # ------------------------------------------------------------------
@@ -117,65 +126,99 @@ def main():
     scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
     print(f"\n[XGBOOST] scale_pos_weight = {scale_pos_weight:.2f}")
 
+    def objective(trial):
+        params = {
+            "max_depth": trial.suggest_int("max_depth", 3, 8),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+            "n_estimators": trial.suggest_int("n_estimators", 200, 1000),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+        }
+        model = XGBClassifier(
+            **params,
+            scale_pos_weight=scale_pos_weight,
+            eval_metric="aucpr",
+            early_stopping_rounds=50,
+            random_state=RANDOM_STATE,
+            n_jobs=-1,
+        )
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        return average_precision_score(y_val, model.predict_proba(X_val)[:, 1])
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=RANDOM_STATE),
+    )
+    study.optimize(objective, n_trials=int(os.environ.get("OPTUNA_TRIALS", "50")))
+    print(f"[OPTUNA] Meilleurs paramètres: {study.best_params}")
+
     xgb = XGBClassifier(
-        n_estimators=800,
-        max_depth=4,
-        learning_rate=0.05,
-        min_child_weight=4,
-        gamma=0.2,
-        subsample=0.9,
-        colsample_bytree=0.8,
-        reg_alpha=0.1,
-        reg_lambda=1.0,
+        **study.best_params,
         scale_pos_weight=scale_pos_weight,
         eval_metric="aucpr",
-        early_stopping_rounds=50,   # <-- stoppe si pas d'amélioration après 50 itérations
+        early_stopping_rounds=50,
         random_state=RANDOM_STATE,
         n_jobs=-1,
     )
-    xgb.fit(
-        X_train,
-        y_train,
-        eval_set=[(X_val, y_val)],
-        verbose=50,  # affiche 1 ligne toutes les 50 itérations au lieu de toutes les lignes
-    )
+    xgb.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
     print(f"[XGBOOST] Meilleure itération : {xgb.best_iteration} "
           f"(sur {xgb.n_estimators} configurées) — AUC-PR val : {xgb.best_score:.4f}")
 
     xgb_val_proba = xgb.predict_proba(X_val)[:, 1]
 
-    # --- Seuil A : compromis équilibré (F1) ---
-    xgb_threshold_f1, _ = find_best_threshold_f1(y_val, xgb_val_proba)
-    xgb_metrics_f1 = evaluate(xgb, X_test, y_test, "XGBoost — seuil F1-optimal", xgb_threshold_f1)
+    baseline_auc_pr = average_precision_score(y_val, baseline_val_proba)
+    xgb_auc_pr = average_precision_score(y_val, xgb_val_proba)
+    print(f"[COMPARAISON] AUC-PR validation LR={baseline_auc_pr:.4f} | XGBoost optimisé={xgb_auc_pr:.4f}")
+    selected_model = xgb if xgb_auc_pr > baseline_auc_pr else baseline
+    model_family = "xgboost" if selected_model is xgb else "logistic_regression"
+    print(f"[SELECTION] Modèle retenu : {model_family}")
+
+    # Calibration Platt sur le jeu de validation avant le choix du seuil clinique.
+    calibrated = CalibratedClassifierCV(FrozenEstimator(selected_model), method="sigmoid")
+    calibrated.fit(X_val, y_val)
+    xgb_val_proba_cal = calibrated.predict_proba(X_val)[:, 1]
+    xgb_threshold_f2, _ = find_best_threshold_f2(y_val, xgb_val_proba_cal)
+    xgb_metrics_f2 = evaluate(
+        calibrated, X_test, y_test, "XGBoost calibré — seuil F2-optimal", xgb_threshold_f2
+    )
 
     # --- Seuil B : orienté recall (viser au moins 60% des patients à risque détectés) ---
     xgb_threshold_recall, prec_at_recall, recall_at_recall = find_threshold_for_recall(
-        y_val, xgb_val_proba, target_recall=0.60
+        y_val, xgb_val_proba_cal, target_recall=0.60
     )
     print(f"\n[SEUIL RECALL] Sur validation : seuil={xgb_threshold_recall:.3f} "
           f"-> precision≈{prec_at_recall:.3f}, recall≈{recall_at_recall:.3f}")
     xgb_metrics_recall = evaluate(
-        xgb, X_test, y_test, "XGBoost — seuil orienté recall (>=60%)", xgb_threshold_recall
+        calibrated, X_test, y_test, "XGBoost calibré — seuil orienté recall (>=60%)", xgb_threshold_recall
     )
+    y_test_proba_cal = calibrated.predict_proba(X_test)[:, 1]
+    brier = brier_score_loss(y_test, y_test_proba_cal)
+    print(f"Brier score (calibré) : {brier:.4f}")
 
     # ------------------------------------------------------------------
     # Sauvegarde du modèle final + métadonnées (pour l'app Streamlit)
     # ------------------------------------------------------------------
-    joblib.dump(xgb, os.path.join(MODEL_DIR, "xgb_model.joblib"))
+    joblib.dump(calibrated, os.path.join(MODEL_DIR, "xgb_model.joblib"))
     joblib.dump(list(X.columns), os.path.join(MODEL_DIR, "feature_columns.joblib"))
     joblib.dump(
         {
-            "threshold_f1": xgb_metrics_f1["threshold"],
+            "threshold_f1": xgb_threshold_f2,
+            "threshold_f2": xgb_threshold_f2,
             "threshold_recall60": xgb_metrics_recall["threshold"],
-            "auc_roc": xgb_metrics_f1["auc_roc"],
-            "auc_pr": xgb_metrics_f1["auc_pr"],
-            "best_iteration": xgb.best_iteration,
+            "auc_roc": xgb_metrics_f2["auc_roc"],
+            "auc_pr": xgb_metrics_f2["auc_pr"],
+            "brier_score": brier,
+            "top_specialties": top_specialties,
+            "model_family": model_family,
+            "best_iteration": getattr(xgb, "best_iteration", None),
         },
         os.path.join(MODEL_DIR, "model_metadata.joblib"),
     )
     print(f"\n✅ Modèle + métadonnées sauvegardés dans {MODEL_DIR}/")
-    print(f"   AUC-ROC : {xgb_metrics_f1['auc_roc']:.4f} | AUC-PR : {xgb_metrics_f1['auc_pr']:.4f}")
-    print(f"   Seuil F1-optimal   : {xgb_metrics_f1['threshold']:.3f}")
+    print(f"   AUC-ROC : {xgb_metrics_f2['auc_roc']:.4f} | AUC-PR : {xgb_metrics_f2['auc_pr']:.4f}")
+    print(f"   Seuil F2 (recommandé cliniquement) : {xgb_threshold_f2:.3f}")
     print(f"   Seuil recall>=60%  : {xgb_metrics_recall['threshold']:.3f}")
 
 

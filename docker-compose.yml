@@ -1,14 +1,12 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
     container_name: diabetes_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: diabetes_user
-      POSTGRES_PASSWORD: diabetes_pass
-      POSTGRES_DB: diabetes_readmission
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER est requis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD est requis}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB est requis}
     ports:
       - "5433:5432"
     volumes:
@@ -17,7 +15,7 @@ services:
     networks:
       - diabetes_net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U diabetes_user -d diabetes_readmission"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -29,11 +27,11 @@ services:
     ports:
       - "8501:8501"
     environment:
-      DB_USER: diabetes_user
-      DB_PASSWORD: diabetes_pass
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: diabetes_readmission
+      DB_USER: ${POSTGRES_USER:?POSTGRES_USER est requis}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD est requis}
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${POSTGRES_DB:?POSTGRES_DB est requis}
     volumes:
       - ./models:/app/models
       - ./data:/app/data
@@ -44,7 +42,11 @@ services:
       - diabetes_net
     command: >
       sh -c "
-      
+      echo 'Lancement ETL...' &&
+      python src/etl/load_to_postgres.py &&
+      echo 'Entraînement du modèle...' &&
+      python src/model/train.py &&
+      echo 'Démarrage Streamlit...' &&
       streamlit run app/streamlit_app.py --server.port=8501 --server.address=0.0.0.0
       "
 

@@ -1,5 +1,15 @@
 # 🚀 Guide Déploiement et Lancement
 
+Crée une configuration locale avant le premier démarrage :
+
+```bash
+copy .env.example .env       # Windows
+cp .env.example .env         # macOS/Linux
+```
+
+Renseigne ensuite `POSTGRES_PASSWORD` et `DB_PASSWORD` dans `.env`. Le fichier
+`.env` reste local et n'est pas versionné.
+
 ## ⚡ Démarrage Rapide (30 secondes)
 
 ### Pour les Évaluateurs
@@ -14,7 +24,9 @@ docker-compose ps
 # URL: http://localhost:8501
 ```
 
-**Attendez 10-15 secondes** pour que PostgreSQL soit complètement prêt, puis:
+Après que PostgreSQL est healthy, l'application exécute automatiquement l'ETL
+et l'entraînement avant de démarrer Streamlit. Suis la progression avec
+`docker-compose logs -f app`, puis:
 - PostgreSQL: http://localhost:5433 (utilisateur: diabetes_user)
 - Streamlit: http://localhost:8501
 
@@ -47,7 +59,7 @@ pip install -r requirements-prod.txt
 docker run -d \
   --name diabetes_postgres \
   -e POSTGRES_USER=diabetes_user \
-  -e POSTGRES_PASSWORD=diabetes_pass \
+   -e POSTGRES_PASSWORD=<mot-de-passe-local> \
   -e POSTGRES_DB=diabetes_readmission \
   -p 5433:5432 \
   -v postgres_data:/var/lib/postgresql/data \
@@ -286,11 +298,11 @@ docker-compose restart app
 ```bash
 # 1. Vérifier les credentials dans docker-compose.yml
 # POSTGRES_USER: diabetes_user
-# POSTGRES_PASSWORD: diabetes_pass
+# POSTGRES_PASSWORD: valeur définie dans .env
 # DB_HOST: postgres (service name!)
 
 # 2. Vérifier la chaîne de connexion
-docker-compose exec app python -c "from sqlalchemy import create_engine; print(create_engine('postgresql+psycopg://diabetes_user:diabetes_pass@postgres:5432/diabetes_readmission'))"
+docker-compose exec app python -c "import os; print('DB_HOST=' + os.environ['DB_HOST'] + ', DB_NAME=' + os.environ['DB_NAME'])"
 
 # 3. Réinitialiser les données
 docker-compose down -v

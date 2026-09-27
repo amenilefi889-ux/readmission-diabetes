@@ -1,19 +1,19 @@
+# syntax=docker/dockerfile:1.7
+
 FROM python:3.12-slim
 
 WORKDIR /app
-
-# Installer les dépendances système
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copier les requirements
 COPY requirements-prod.txt .
 
 # Installer les dépendances Python
-# Si le fichier avec versions spécifiques échoue, utiliser les dépendances minimales
-RUN pip install --no-cache-dir -r requirements-prod.txt || \
-    pip install --no-cache-dir numpy pandas scikit-learn xgboost shap joblib streamlit SQLAlchemy psycopg psycopg2-binary matplotlib seaborn Pillow python-dotenv pytest requests
+RUN --mount=type=cache,target=/root/.cache/pip \
+	pip install \
+	--prefer-binary \
+	--retries 10 \
+	--timeout 180 \
+	-r requirements-prod.txt
 
 # Copier le code
 COPY . .

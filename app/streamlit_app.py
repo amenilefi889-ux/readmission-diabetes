@@ -64,14 +64,33 @@ def load_metadata():
     (rétrocompatibilité avec un modèle entraîné avant cet ajout)."""
     if METADATA_PATH.exists():
         return joblib.load(METADATA_PATH)
-    return {"threshold_f1": 0.5, "threshold_recall60": 0.5, "auc_roc": None, "auc_pr": None}
+    return {
+        "threshold_f1": 0.5,
+        "threshold_f2": 0.5,
+        "threshold_recall60": 0.5,
+        "top_specialties": [],
+        "auc_roc": None,
+        "auc_pr": None,
+    }
 
 
 @st.cache_resource
 def init_shap_explainer():
     """Initialise l'explainer SHAP une seule fois."""
     model, _ = load_model()
-    explainer = shap.TreeExplainer(model)
+    base_model = model
+    for _ in range(3):
+        nested_model = getattr(base_model, "estimator", None)
+        if nested_model is None or nested_model is base_model:
+            break
+        base_model = nested_model
+
+    try:
+        explainer = shap.TreeExplainer(base_model)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Le modèle SHAP sous-jacent n'est pas un estimateur d'arbres compatible: {type(base_model)}"
+        ) from exc
     return explainer
 
 
@@ -87,15 +106,6 @@ def inject_custom_styles():
         }
 
         .main .block-container {
-
-        def apply_example_patient() -> None:
-            for key, value in EXAMPLE_PATIENT.items():
-                st.session_state[key] = value
-
-        def reset_patient_form() -> None:
-            for key in EXAMPLE_PATIENT:
-                if key in st.session_state:
-                    del st.session_state[key]
             padding-top: 1.2rem;
             padding-bottom: 2rem;
             max-width: 1200px;
@@ -106,39 +116,45 @@ def inject_custom_styles():
             border-right: 1px solid rgba(255, 255, 255, 0.08);
         }
 
-        [data-testid="stSidebar"] * {
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] label {
             color: #e5e7eb;
         }
-                race = st.selectbox("Race", ["Caucasian", "AfricanAmerican", "Asian", "Hispanic", "Other", "Unknown"], key="race")
-                gender = st.selectbox("Genre", ["Female", "Male"], key="gender")
-                age = st.selectbox("Tranche d'âge", ["[0-10)", "[10-20)", "[20-30)", "[30-40)", "[40-50)", "[50-60)", "[60-70)", "[70-80)", "[80-90)", "[90-100)"], key="age")
-        [data-testid="stSidebar"] div,
-        [data-testid="stSidebar"] span {
-                admission_type_id = st.selectbox("Type d'admission", [1, 2, 3, 4, 5, 6, 7, 8], key="admission_type_id")
-                discharge_disposition_id = st.selectbox("Disposition de sortie", VALID_DISCHARGE_IDS, key="discharge_disposition_id")
-                admission_source_id = st.selectbox("Source d'admission", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21], key="admission_source_id")
-                time_in_hospital = st.number_input("Durée séjour (jours)", min_value=1, max_value=30, value=4, key="time_in_hospital")
-                medical_specialty = st.selectbox("Spécialité médicale", ["Unknown", "Cardiology", "InternalMedicine", "Family/GeneralPractice", "Emergency/Trauma", "Surgery", "Other"], key="medical_specialty")
-            border: 1px solid rgba(148, 163, 184, 0.16);
-            border-radius: 28px;
-                num_lab_procedures = st.number_input("Nombre de labos", min_value=0, max_value=200, value=40, key="num_lab_procedures")
-                num_procedures = st.number_input("Nombre de procédures", min_value=0, max_value=20, value=2, key="num_procedures")
-                num_medications = st.number_input("Nombre de médicaments", min_value=0, max_value=100, value=15, key="num_medications")
-                number_outpatient = st.number_input("Nombre de visites ambulatoires", min_value=0, max_value=50, value=0, key="number_outpatient")
-                number_emergency = st.number_input("Nombre d'urgences", min_value=0, max_value=50, value=0, key="number_emergency")
-                number_inpatient = st.number_input("Nombre d'hospitalisations précédentes", min_value=0, max_value=50, value=0, key="number_inpatient")
-                number_diagnoses = st.number_input("Nombre de diagnostics", min_value=1, max_value=16, value=8, key="number_diagnoses")
-            margin: 0;
-            font-size: 2rem;
-                max_glu_serum = st.selectbox("Glycémie max", ["Norm", ">200", ">300", "Not tested"], key="max_glu_serum")
-                a1c_result = st.selectbox("HbA1c", [">8", ">7", "Norm", "Not tested"], key="a1c_result")
-                diabetes_med = st.selectbox("Médicament diabète", ["Yes", "No"], key="diabetes_med")
-                change_med = st.selectbox("Changement de traitement", ["Ch", "No"], key="change_med")
-            margin: 0.55rem 0 0 0;
-            color: rgba(226, 232, 240, 0.88);
-                diag_1 = st.text_input("Diagnostic 1 (code ICD-9)", "250", key="diag_1")
-                diag_2 = st.text_input("Diagnostic 2 (code ICD-9)", "401", key="diag_2")
-                diag_3 = st.text_input("Diagnostic 3 (code ICD-9)", "428", key="diag_3")
+
+        [data-testid="stSidebar"] input,
+        [data-testid="stSidebar"] textarea,
+        [data-testid="stSidebar"] [data-baseweb="select"] > div {
+            color: #0f172a !important;
+            background: #ffffff !important;
+            border-color: #cbd5e1 !important;
+        }
+
+        [data-testid="stSidebar"] input::placeholder,
+        [data-testid="stSidebar"] textarea::placeholder {
+            color: #64748b !important;
+        }
+
+        [data-testid="stSidebar"] button {
+            color: #0f172a !important;
+        }
+
+        [data-testid="stSidebar"] button * {
+            color: #0f172a !important;
+        }
+
+        [data-testid="stSidebar"] .stMarkdown h2,
+        [data-testid="stSidebar"] .stMarkdown h3 {
+            color: #f8fafc;
+            margin: 0.8rem 0 0.35rem;
+        }
+
+        [data-testid="stSidebar"] .stCaption,
+        [data-testid="stSidebar"] label {
+            color: #cbd5e1;
+        }
+
         .badge-row {
             display: flex;
             flex-wrap: wrap;
@@ -322,7 +338,7 @@ def risk_profile(risk_percent: float) -> tuple[str, str, str]:
     return "Faible", "#16a34a", "Risque relativement contenu"
 
 
-def render_header(metadata: dict, threshold_f1_value: float) -> None:
+def render_header(metadata: dict, threshold_f2_value: float) -> None:
     auc_roc = metadata.get("auc_roc")
     auc_pr = metadata.get("auc_pr")
     auc_roc_text = f"{auc_roc:.3f}" if auc_roc is not None else "N/A"
@@ -350,8 +366,8 @@ def render_header(metadata: dict, threshold_f1_value: float) -> None:
             f"""
             <div class="info-card">
                 <div class="section-title">Seuil de décision</div>
-                <h3>{threshold_f1_value:.3f}</h3>
-                <p>Optimisé sur validation pour équilibrer précision et rappel.</p>
+                <h3>{threshold_f2_value:.3f}</h3>
+                <p>Seuil F2 optimisé sur validation, avec priorité au rappel clinique.</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -445,14 +461,14 @@ inject_custom_styles()
 
 model, feature_columns = load_model()
 metadata = load_metadata()
-threshold_f1 = metadata["threshold_f1"]
+threshold_f2 = metadata.get("threshold_f2", metadata["threshold_f1"])
 
-render_header(metadata, threshold_f1)
+render_header(metadata, threshold_f2)
 
 if metadata.get("auc_pr") is not None:
     st.sidebar.markdown("### Modèle entraîné")
     st.sidebar.caption(
-        f"AUC-ROC={metadata['auc_roc']:.3f} | AUC-PR={metadata['auc_pr']:.3f} | seuil={threshold_f1:.3f}"
+        f"AUC-ROC={metadata['auc_roc']:.3f} | AUC-PR={metadata['auc_pr']:.3f} | seuil F2={threshold_f2:.3f}"
     )
 
 st.sidebar.markdown("## Informations patient")
@@ -526,13 +542,17 @@ if st.sidebar.button("Prédire"):
         "diag_3": diag_3,
     }])
 
-    X_input = transform_dataframe_for_model(input_df, feature_columns=feature_columns)
+    X_input = transform_dataframe_for_model(
+        input_df,
+        feature_columns=feature_columns,
+        top_specialties=metadata.get("top_specialties"),
+    )
     proba = model.predict_proba(X_input)[0, 1]
     risk = round(float(proba) * 100, 1)
-    predicted_readmission = proba >= threshold_f1
+    predicted_readmission = proba >= threshold_f2
 
     st.markdown('<div class="section-title">Résultat clinique</div>', unsafe_allow_html=True)
-    render_prediction_result(proba, threshold_f1, risk)
+    render_prediction_result(proba, threshold_f2, risk)
     render_patient_summary({
         "age": age,
         "time_in_hospital": time_in_hospital,
@@ -547,7 +567,7 @@ if st.sidebar.button("Prédire"):
     with tab_result:
         info_cols = st.columns(3)
         with info_cols[0]:
-            st.metric("Seuil utilisé", f"{threshold_f1:.3f}")
+            st.metric("Seuil F2 utilisé", f"{threshold_f2:.3f}")
         with info_cols[1]:
             st.metric("Décision", "Réadmission" if predicted_readmission else "Pas de réadmission")
         with info_cols[2]:
@@ -556,7 +576,7 @@ if st.sidebar.button("Prédire"):
         st.markdown(
             """
             <div class="shap-note">
-                Le score ci-dessus résume la sortie du modèle. L'onglet Explicabilité montre les variables qui ont le plus contribué à la prédiction.
+                Le seuil F2 privilégie le rappel pour limiter le risque de ne pas détecter un patient à risque. L'onglet Explicabilité montre les variables qui ont le plus contribué à la prédiction.
             </div>
             """,
             unsafe_allow_html=True,
